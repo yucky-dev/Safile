@@ -1,0 +1,513 @@
+/**
+ * SAFILE BACKEND LAYER
+ * Indexd SDK Integration, Encryption Pipeline, Contract Automation
+ * Budget: $3,500 (3 months)
+ * 
+ * Core responsibilities:
+ * - Hospital EHR system API integration
+ * - Client-side AES-256-GCM encryption
+ * - Indexd contract formation and management
+ * - Backup orchestration and retry logic
+ * - Key management (hospital-held encryption keys)
+ */
+
+// ══════════════════════════════════════
+// 1. HOSPITAL EHR INTEGRATION
+// ══════════════════════════════════════
+
+class HospitalEHRConnector {
+  constructor(config) {
+    this.endpoint = config.apiEndpoint;
+    this.apiKey = config.apiKey;
+    this.ehrSystem = config.ehrSystem; // OpenMRS, Bahmni, DHIS2, Epic (FHIR), Custom
+    this.syncInterval = config.syncInterval || 3600000; // 1 hour default
+    this.lastSync = null;
+  }
+
+  async authenticate() {
+    try {
+      const response = await fetch(`${this.endpoint}/auth/test`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!response.ok) throw new Error('EHR authentication failed');
+      console.log('✓ EHR authenticated');
+      return true;
+    } catch (err) {
+      console.error('EHR Auth Error:', err);
+      return false;
+    }
+  }
+
+  async fetchPatientRecords() {
+    /**
+     * Fetch all patient records from hospital EHR
+     * Returns array of records ready for encryption
+     */
+    try {
+      const response = await fetch(`${this.endpoint}/patients?include=demographics,visits,medications`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await response.json();
+      
+      if (!data.results) return [];
+      
+      // Normalize records based on EHR system
+      return data.results.map(record => ({
+        id: record.id || record.uuid,
+        name: record.name || record.given_name,
+        ward: record.ward || 'General',
+        lastUpdated: new Date(record.dateModified || record.updated_at),
+        recordData: JSON.stringify(record), // Full record for encryption
+        size: new Blob([JSON.stringify(record)]).size
+      }));
+    } catch (err) {
+      console.error('EHR Fetch Error:', err);
+      return [];
+    }
+  }
+
+  async syncChanges(since) {
+    /**
+     * Fetch only records changed since last sync (delta sync)
+     * Reduces bandwidth and Sia storage costs
+     */
+    try {
+      const response = await fetch(`${this.endpoint}/patients/changed?since=${since.toISOString()}`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${this.apiKey}` }
+      });
+      return await response.json();
+    } catch (err) {
+      console.error('Delta Sync Error:', err);
+      return { results: [] };
+    }
+  }
+}
+
+// ══════════════════════════════════════
+// 2. ENCRYPTION PIPELINE (AES-256-GCM)
+// ══════════════════════════════════════
+
+class EncryptionEngine {
+  constructor(masterKeyId) {
+    this.masterKeyId = masterKeyId;
+    this.algorithm = 'AES-GCM';
+    this.keyLength = 256;
+  }
+
+  /**
+   * Generate 256-bit encryption key (hospital-held)
+   * Key never leaves hospital server
+   */
+  async generateKey() {
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: this.keyLength },
+      true, // extractable for backup purposes
+      ['encrypt', 'decrypt']
+    );
+    return key;
+  }
+
+  /**
+   * Encrypt patient record before upload
+   * Returns { ciphertext, iv, authTag, keyId }
+   */
+  async encryptRecord(plaintext, key) {
+    const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV for GCM
+    const encoder = new TextEncoder();
+    const data = encoder.encode(typeof plaintext === 'string' ? plaintext : JSON.stringify(plaintext));
+
+    try {
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv },
+        key,
+        data
+      );
+
+      return {
+        ciphertext: new Uint8Array(ciphertext),
+        iv: iv,
+        keyId: this.masterKeyId,
+        algorithm: 'AES-256-GCM',
+        encryptedAt: new Date().toISOString()
+      };
+    } catch (err) {
+      console.error('Encryption Error:', err);
+      throw err;
+    }
+  }
+
+  /**
+   * Decrypt record (for recovery/verification)
+   */
+  async decryptRecord(encryptedData, key) {
+    try {
+      const plaintext = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: encryptedData.iv },
+        key,
+        encryptedData.ciphertext
+      );
+      return new TextDecoder().decode(plaintext);
+    } catch (err) {
+      console.error('Decryption Error:', err);
+      throw new Error('Decryption failed - key mismatch or corrupted data');
+    }
+  }
+
+  /**
+   * Compute SHA-256 checksum for integrity verification
+   */
+  async computeHash(data) {
+    const buffer = new TextEncoder().encode(typeof data === 'string' ? data : JSON.stringify(data));
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+}
+
+// ══════════════════════════════════════
+// 3. INDEXD INTEGRATION (Sia SDK)
+// ══════════════════════════════════════
+
+class IndexdStorageManager {
+  constructor(config) {
+    this.nodeUrl = config.nodeUrl; // indexd node endpoint
+    this.apiPassword = config.apiPassword;
+    this.redundancy = config.redundancy || 3; // 3x replication on Sia
+    this.contracts = new Map(); // Track active contracts
+  }
+
+  /**
+   * Connect to indexd node
+   * Verify node health and connectivity
+   */
+  async connect() {
+    try {
+      const response = await fetch(`${this.nodeUrl}/api/system/status`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${btoa(':' + this.apiPassword)}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const status = await response.json();
+      console.log('✓ Indexd connected', status);
+      return { healthy: true, version: status.version, uptime: status.uptime };
+    } catch (err) {
+      console.error('Indexd Connection Error:', err);
+      return { healthy: false, error: err.message };
+    }
+  }
+
+  /**
+   * Upload encrypted object to Sia via indexd S3 API
+   * Uses indexd for tamper-proof content-addressed storage
+   */
+  async uploadEncryptedObject(objectKey, encryptedData) {
+    try {
+      const formData = new FormData();
+      formData.append('key', objectKey);
+      formData.append('data', new Blob([encryptedData.ciphertext]));
+      formData.append('metadata', JSON.stringify({
+        iv: Array.from(encryptedData.iv),
+        keyId: encryptedData.keyId,
+        algorithm: encryptedData.algorithm,
+        encryptedAt: encryptedData.encryptedAt
+      }));
+
+      const response = await fetch(`${this.nodeUrl}/api/objects`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${btoa(':' + this.apiPassword)}`
+        },
+        body: formData
+      });
+
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Upload failed');
+
+      console.log(`✓ Uploaded ${objectKey} to indexd`);
+      return {
+        success: true,
+        objectHash: result.hash, // Content-addressed hash
+        indexdRef: result.ref,
+        redundancy: this.redundancy
+      };
+    } catch (err) {
+      console.error('Indexd Upload Error:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Download encrypted object from Sia via indexd
+   * Used during recovery/restore
+   */
+  async downloadEncryptedObject(objectHash) {
+    try {
+      const response = await fetch(`${this.nodeUrl}/api/objects/${objectHash}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${btoa(':' + this.apiPassword)}`
+        }
+      });
+
+      if (!response.ok) throw new Error('Object not found on indexd');
+
+      const data = await response.json();
+      return {
+        success: true,
+        ciphertext: new Uint8Array(data.data),
+        metadata: data.metadata
+      };
+    } catch (err) {
+      console.error('Indexd Download Error:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Verify object integrity using content hash
+   * Ensures data wasn't tampered with on Sia
+   */
+  async verifyObjectIntegrity(objectHash, localHash) {
+    try {
+      const response = await fetch(`${this.nodeUrl}/api/objects/${objectHash}/verify`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${btoa(':' + this.apiPassword)}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ expectedHash: localHash })
+      });
+
+      const result = await response.json();
+      console.log(`✓ Object ${objectHash} integrity verified`);
+      return { verified: true, redundancy: result.redundancy };
+    } catch (err) {
+      console.error('Integrity Verification Error:', err);
+      return { verified: false, error: err.message };
+    }
+  }
+}
+
+// ══════════════════════════════════════
+// 4. BACKUP ORCHESTRATION
+// ══════════════════════════════════════
+
+class BackupOrchestrator {
+  constructor(ehrConnector, encryptionEngine, indexdManager) {
+    this.ehr = ehrConnector;
+    this.encryption = encryptionEngine;
+    this.indexd = indexdManager;
+    this.backupLog = [];
+    this.failedRecords = [];
+    this.retryAttempts = 3;
+  }
+
+  /**
+   * Execute full backup cycle
+   * 1. Fetch records from EHR
+   * 2. Encrypt each record
+   * 3. Upload to Sia via indexd
+   * 4. Log backup event
+   */
+  async executeBackup(encryptionKey) {
+    console.log('🔄 Starting backup cycle...');
+    const startTime = Date.now();
+    const snapshot = {
+      id: `snapshot-${Date.now()}`,
+      startedAt: new Date(),
+      records: [],
+      errors: [],
+      totalSize: 0
+    };
+
+    try {
+      // Step 1: Fetch records
+      const records = await this.ehr.fetchPatientRecords();
+      console.log(`📋 Fetched ${records.length} records from EHR`);
+
+      // Step 2 & 3: Encrypt and upload
+      for (const record of records) {
+        try {
+          // Encrypt
+          const encrypted = await this.encryption.encryptRecord(record.recordData, encryptionKey);
+          const hash = await this.encryption.computeHash(encrypted.ciphertext);
+
+          // Upload to Sia
+          const uploadResult = await this.indexd.uploadEncryptedObject(
+            `patient-${record.id}`,
+            encrypted
+          );
+
+          if (uploadResult.success) {
+            snapshot.records.push({
+              patientId: record.id,
+              patientName: record.name,
+              ward: record.ward,
+              indexdHash: uploadResult.objectHash,
+              localHash: hash,
+              uploadedAt: new Date(),
+              size: record.size
+            });
+            snapshot.totalSize += record.size;
+            console.log(`✓ ${record.name} (${record.id}) encrypted & uploaded`);
+          } else {
+            throw new Error(uploadResult.error);
+          }
+        } catch (err) {
+          snapshot.errors.push({
+            patientId: record.id,
+            patientName: record.name,
+            error: err.message,
+            timestamp: new Date()
+          });
+          this.failedRecords.push(record);
+          console.error(`✗ Failed to backup ${record.name}: ${err.message}`);
+        }
+      }
+
+      // Step 4: Verify integrity for sample records
+      for (let i = 0; i < Math.min(5, snapshot.records.length); i++) {
+        const rec = snapshot.records[i];
+        const verified = await this.indexd.verifyObjectIntegrity(rec.indexdHash, rec.localHash);
+        rec.verified = verified.verified;
+      }
+
+      snapshot.completedAt = new Date();
+      snapshot.duration = Date.now() - startTime;
+      this.backupLog.push(snapshot);
+
+      console.log(`✓ Backup complete: ${snapshot.records.length}/${records.length} records`);
+      return snapshot;
+    } catch (err) {
+      console.error('Backup Orchestration Error:', err);
+      throw err;
+    }
+  }
+
+  /**
+   * Retry failed records
+   * Exponential backoff: 2s, 4s, 8s
+   */
+  async retryFailedRecords(encryptionKey) {
+    console.log(`🔄 Retrying ${this.failedRecords.length} failed records...`);
+    const retried = [];
+
+    for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+      const remaining = this.failedRecords.filter(r => !retried.includes(r.id));
+      if (remaining.length === 0) break;
+
+      const backoffMs = Math.pow(2, attempt) * 1000;
+      console.log(`⏳ Retry attempt ${attempt}/${this.retryAttempts} (waiting ${backoffMs}ms)`);
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
+
+      for (const record of remaining) {
+        try {
+          const encrypted = await this.encryption.encryptRecord(record.recordData, encryptionKey);
+          const result = await this.indexd.uploadEncryptedObject(`patient-${record.id}`, encrypted);
+          
+          if (result.success) {
+            retried.push(record.id);
+            this.failedRecords = this.failedRecords.filter(r => r.id !== record.id);
+            console.log(`✓ Retry successful: ${record.name}`);
+          }
+        } catch (err) {
+          console.error(`✗ Retry failed for ${record.name}: ${err.message}`);
+        }
+      }
+    }
+
+    console.log(`✓ Retry complete: ${retried.length} recovered`);
+    return { retried, stillFailing: this.failedRecords };
+  }
+
+  /**
+   * Get backup history and statistics
+   */
+  getBackupHistory(limit = 10) {
+    return {
+      total: this.backupLog.length,
+      recent: this.backupLog.slice(-limit).reverse(),
+      successRate: (this.backupLog.filter(s => s.errors.length === 0).length / this.backupLog.length * 100).toFixed(1) + '%',
+      totalRecordsBacked: this.backupLog.reduce((sum, s) => sum + s.records.length, 0),
+      totalSize: (this.backupLog.reduce((sum, s) => sum + s.totalSize, 0) / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
+    };
+  }
+}
+
+// ══════════════════════════════════════
+// 5. KEY MANAGEMENT (Hospital-held)
+// ══════════════════════════════════════
+
+class KeyManager {
+  constructor() {
+    this.keys = new Map(); // keyId -> key
+  }
+
+  /**
+   * Store key locally (IndexedDB for persistence)
+   * Keys never sent to Safile servers
+   */
+  async storeKeyLocally(keyId, key) {
+    return new Promise((resolve, reject) => {
+      const db = indexedDB.open('SafileKeys', 1);
+      db.onsuccess = (e) => {
+        const objectStore = e.target.result.transaction(['keys'], 'readwrite').objectStore('keys');
+        objectStore.put({ keyId, key: key, storedAt: new Date() });
+        resolve();
+      };
+      db.onerror = () => reject('Failed to store key');
+    });
+  }
+
+  /**
+   * Retrieve key from local storage
+   */
+  async retrieveKeyLocally(keyId) {
+    return new Promise((resolve, reject) => {
+      const db = indexedDB.open('SafileKeys', 1);
+      db.onsuccess = (e) => {
+        const objectStore = e.target.result.transaction(['keys'], 'readonly').objectStore('keys');
+        const request = objectStore.get(keyId);
+        request.onsuccess = () => resolve(request.result?.key || null);
+        request.onerror = () => reject('Failed to retrieve key');
+      };
+    });
+  }
+
+  /**
+   * Rotate encryption key (scheduled or manual)
+   */
+  async rotateKey(oldKeyId, encryptionEngine) {
+    console.log('🔄 Rotating encryption key...');
+    const newKey = await encryptionEngine.generateKey();
+    const newKeyId = `mkey-${Date.now()}`;
+    await this.storeKeyLocally(newKeyId, newKey);
+    console.log(`✓ Key rotation complete: ${oldKeyId} → ${newKeyId}`);
+    return newKeyId;
+  }
+}
+
+// ══════════════════════════════════════
+// EXPORT FOR FRONTEND INTEGRATION
+// ══════════════════════════════════════
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    HospitalEHRConnector,
+    EncryptionEngine,
+    IndexdStorageManager,
+    BackupOrchestrator,
+    KeyManager
+  };
+}

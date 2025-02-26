@@ -3,13 +3,23 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: SAFILE API - Hospital EHR backup via Sia/indexd
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: ehr
+    description: EHR connector configuration
+  - name: backups
+    description: Backup operations and history
+  - name: keys
+    description: Encryption key management
+  - name: indexd
+    description: Indexd/Sia storage status
+  - name: stats
+    description: Dashboard statistics
 paths:
   /healthz:
     get:
@@ -24,6 +34,437 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # ── EHR Connectors ──────────────────────────────────────
+  /ehr-connectors:
+    get:
+      operationId: listEhrConnectors
+      tags: [ehr]
+      summary: List all EHR connectors
+      responses:
+        "200":
+          description: List of EHR connectors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EhrConnector"
+    post:
+      operationId: createEhrConnector
+      tags: [ehr]
+      summary: Create a new EHR connector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEhrConnectorBody"
+      responses:
+        "201":
+          description: Created connector
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EhrConnector"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /ehr-connectors/{id}:
+    get:
+      operationId: getEhrConnector
+      tags: [ehr]
+      summary: Get an EHR connector
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: EHR connector
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EhrConnector"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateEhrConnector
+      tags: [ehr]
+      summary: Update an EHR connector
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEhrConnectorBody"
+      responses:
+        "200":
+          description: Updated connector
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EhrConnector"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteEhrConnector
+      tags: [ehr]
+      summary: Delete an EHR connector
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /ehr-connectors/{id}/test:
+    post:
+      operationId: testEhrConnector
+      tags: [ehr]
+      summary: Test EHR connector authentication
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorTestResult"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Backup Snapshots ──────────────────────────────────────
+  /backups:
+    get:
+      operationId: listBackups
+      tags: [backups]
+      summary: List backup snapshots
+      parameters:
+        - name: connectorId
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: limit
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of backup snapshots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BackupSnapshot"
+    post:
+      operationId: triggerBackup
+      tags: [backups]
+      summary: Trigger a new backup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerBackupBody"
+      responses:
+        "202":
+          description: Backup started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshot"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /backups/{id}:
+    get:
+      operationId: getBackup
+      tags: [backups]
+      summary: Get a backup snapshot
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Backup snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshot"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /backups/{id}/records:
+    get:
+      operationId: listBackupRecords
+      tags: [backups]
+      summary: List records within a backup snapshot
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of backed-up records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BackupRecord"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Encryption Keys ──────────────────────────────────────
+  /keys:
+    get:
+      operationId: listKeys
+      tags: [keys]
+      summary: List encryption key metadata (no raw key material returned)
+      responses:
+        "200":
+          description: List of key metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EncryptionKeyMeta"
+    post:
+      operationId: createKey
+      tags: [keys]
+      summary: Generate a new encryption key record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateKeyBody"
+      responses:
+        "201":
+          description: Created key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EncryptionKeyMeta"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /keys/{id}/rotate:
+    post:
+      operationId: rotateKey
+      tags: [keys]
+      summary: Rotate an encryption key
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Rotated key metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EncryptionKeyMeta"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Indexd Node Config ──────────────────────────────────────
+  /indexd-nodes:
+    get:
+      operationId: listIndexdNodes
+      tags: [indexd]
+      summary: List configured indexd nodes
+      responses:
+        "200":
+          description: List of indexd nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/IndexdNode"
+    post:
+      operationId: createIndexdNode
+      tags: [indexd]
+      summary: Add an indexd node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateIndexdNodeBody"
+      responses:
+        "201":
+          description: Created node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndexdNode"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /indexd-nodes/{id}:
+    delete:
+      operationId: deleteIndexdNode
+      tags: [indexd]
+      summary: Remove an indexd node
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /indexd-nodes/{id}/status:
+    get:
+      operationId: getIndexdNodeStatus
+      tags: [indexd]
+      summary: Get health status of an indexd node
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Node status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndexdNodeStatus"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Dashboard Stats ──────────────────────────────────────
+  /stats/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [stats]
+      summary: Get dashboard summary statistics
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /stats/backup-trend:
+    get:
+      operationId: getBackupTrend
+      tags: [stats]
+      summary: Get backup success/failure trend over last 30 days
+      responses:
+        "200":
+          description: Trend data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BackupTrendPoint"
+
+  /stats/ward-coverage:
+    get:
+      operationId: getWardCoverage
+      tags: [stats]
+      summary: Get records backed up per ward
+      responses:
+        "200":
+          description: Ward coverage breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WardCoverageItem"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +475,333 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    # ── EHR ──
+    EhrConnector:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        ehrSystem:
+          type: string
+          description: OpenMRS | Bahmni | DHIS2 | Epic | Custom
+        apiEndpoint:
+          type: string
+        syncIntervalHours:
+          type: integer
+        status:
+          type: string
+          description: active | inactive | error
+        lastSyncAt:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required:
+        - id
+        - name
+        - ehrSystem
+        - apiEndpoint
+        - syncIntervalHours
+        - status
+        - lastSyncAt
+        - createdAt
+
+    CreateEhrConnectorBody:
+      type: object
+      properties:
+        name:
+          type: string
+        ehrSystem:
+          type: string
+        apiEndpoint:
+          type: string
+        apiKey:
+          type: string
+        syncIntervalHours:
+          type: integer
+      required:
+        - name
+        - ehrSystem
+        - apiEndpoint
+        - apiKey
+        - syncIntervalHours
+
+    UpdateEhrConnectorBody:
+      type: object
+      properties:
+        name:
+          type: string
+        ehrSystem:
+          type: string
+        apiEndpoint:
+          type: string
+        apiKey:
+          type: string
+        syncIntervalHours:
+          type: integer
+        status:
+          type: string
+
+    ConnectorTestResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        latencyMs:
+          type: ["integer", "null"]
+      required:
+        - success
+        - message
+        - latencyMs
+
+    # ── Backups ──
+    BackupSnapshot:
+      type: object
+      properties:
+        id:
+          type: integer
+        connectorId:
+          type: integer
+        connectorName:
+          type: string
+        status:
+          type: string
+          description: running | completed | failed | partial
+        totalRecords:
+          type: integer
+        successRecords:
+          type: integer
+        failedRecords:
+          type: integer
+        totalSizeBytes:
+          type: integer
+        durationMs:
+          type: ["integer", "null"]
+        startedAt:
+          type: string
+        completedAt:
+          type: ["string", "null"]
+      required:
+        - id
+        - connectorId
+        - connectorName
+        - status
+        - totalRecords
+        - successRecords
+        - failedRecords
+        - totalSizeBytes
+        - durationMs
+        - startedAt
+        - completedAt
+
+    TriggerBackupBody:
+      type: object
+      properties:
+        connectorId:
+          type: integer
+        keyId:
+          type: integer
+      required:
+        - connectorId
+        - keyId
+
+    BackupRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        snapshotId:
+          type: integer
+        patientId:
+          type: string
+        patientName:
+          type: string
+        ward:
+          type: string
+        indexdHash:
+          type: string
+        localHash:
+          type: string
+        sizeBytes:
+          type: integer
+        verified:
+          type: boolean
+        uploadedAt:
+          type: string
+      required:
+        - id
+        - snapshotId
+        - patientId
+        - patientName
+        - ward
+        - indexdHash
+        - localHash
+        - sizeBytes
+        - verified
+        - uploadedAt
+
+    # ── Keys ──
+    EncryptionKeyMeta:
+      type: object
+      properties:
+        id:
+          type: integer
+        keyId:
+          type: string
+        algorithm:
+          type: string
+        status:
+          type: string
+          description: active | rotated | revoked
+        createdAt:
+          type: string
+        rotatedAt:
+          type: ["string", "null"]
+        connectorId:
+          type: ["integer", "null"]
+      required:
+        - id
+        - keyId
+        - algorithm
+        - status
+        - createdAt
+        - rotatedAt
+        - connectorId
+
+    CreateKeyBody:
+      type: object
+      properties:
+        connectorId:
+          type: ["integer", "null"]
+        algorithm:
+          type: string
+      required:
+        - algorithm
+
+    # ── Indexd ──
+    IndexdNode:
+      type: object
+      properties:
+        id:
+          type: integer
+        nodeUrl:
+          type: string
+        redundancy:
+          type: integer
+        status:
+          type: string
+          description: online | offline | unknown
+        createdAt:
+          type: string
+      required:
+        - id
+        - nodeUrl
+        - redundancy
+        - status
+        - createdAt
+
+    CreateIndexdNodeBody:
+      type: object
+      properties:
+        nodeUrl:
+          type: string
+        apiPassword:
+          type: string
+        redundancy:
+          type: integer
+      required:
+        - nodeUrl
+        - apiPassword
+        - redundancy
+
+    IndexdNodeStatus:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+        version:
+          type: ["string", "null"]
+        uptimeSeconds:
+          type: ["integer", "null"]
+        error:
+          type: ["string", "null"]
+      required:
+        - healthy
+        - version
+        - uptimeSeconds
+        - error
+
+    # ── Stats ──
+    DashboardSummary:
+      type: object
+      properties:
+        totalConnectors:
+          type: integer
+        activeConnectors:
+          type: integer
+        totalBackups:
+          type: integer
+        successRate:
+          type: number
+        totalRecordsBacked:
+          type: integer
+        totalSizeBytes:
+          type: integer
+        lastBackupAt:
+          type: ["string", "null"]
+        failedRecordsToday:
+          type: integer
+        activeKeys:
+          type: integer
+        onlineNodes:
+          type: integer
+      required:
+        - totalConnectors
+        - activeConnectors
+        - totalBackups
+        - successRate
+        - totalRecordsBacked
+        - totalSizeBytes
+        - lastBackupAt
+        - failedRecordsToday
+        - activeKeys
+        - onlineNodes
+
+    BackupTrendPoint:
+      type: object
+      properties:
+        date:
+          type: string
+        success:
+          type: integer
+        failed:
+          type: integer
+      required:
+        - date
+        - success
+        - failed
+
+    WardCoverageItem:
+      type: object
+      properties:
+        ward:
+          type: string
+        records:
+          type: integer
+        sizeBytes:
+          type: integer
+      required:
+        - ward
+        - records
+        - sizeBytes
