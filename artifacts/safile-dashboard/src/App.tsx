@@ -4,25 +4,29 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 
-const queryClient = new QueryClient();
+import { Layout } from "@/components/Layout";
+import { Dashboard } from "@/pages/Dashboard";
+import { Connectors } from "@/pages/Connectors";
+import { Backups } from "@/pages/Backups";
+import { BackupDetail } from "@/pages/BackupDetail";
+import { Keys } from "@/pages/Keys";
+import { StorageNodes } from "@/pages/StorageNodes";
 
-function Home() {
-  return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gray-50">
-      <div className="text-center">
-        <h1 className="text-2xl font-bold text-gray-900">Replit Agent is building...</h1>
-        <p className="mt-2 text-sm text-gray-600">Your app will appear here once it's ready.</p>
-      </div>
-    </div>
-  );
-}
+const queryClient = new QueryClient();
 
 function Router() {
   return (
-    <Switch>
-      <Route path="/" component={Home} />
-      <Route component={NotFound} />
-    </Switch>
+    <Layout>
+      <Switch>
+        <Route path="/" component={Dashboard} />
+        <Route path="/connectors" component={Connectors} />
+        <Route path="/backups" component={Backups} />
+        <Route path="/backups/:id" component={BackupDetail} />
+        <Route path="/keys" component={Keys} />
+        <Route path="/storage" component={StorageNodes} />
+        <Route component={NotFound} />
+      </Switch>
+    </Layout>
   );
 }
 

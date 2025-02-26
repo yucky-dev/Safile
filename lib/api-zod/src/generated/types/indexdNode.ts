@@ -6,6 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
+export interface IndexdNode {
+  id: number;
+  nodeUrl: string;
+  redundancy: number;
+  /** online | offline | unknown */
   status: string;
+  createdAt: string;
 }
